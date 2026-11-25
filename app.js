@@ -5,7 +5,7 @@
   var ALPHA = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   var guests = new Map();
   var eventName = "Untitled event";
-  var db = null, downloads = null, cloud = null, localMode = true;
+  var db = null, downloads = null, cloud = null, apiMode = false, localMode = true;
   var filter = "all", lastResult = null, sheetCode = null, wipeArmed = false;
   var LS = "doorlist.v1";
 
@@ -36,8 +36,22 @@
     try{var d=JSON.parse(localStorage.getItem(LS)||"null");if(d){eventName=d.name||eventName;(d.guests||[]).forEach(function(g){guests.set(g.code,g)})}}
     catch(e){showNotice("Could not read this browser's saved guest list. Check browser storage settings.")}
   }
+  function apiRequest(path,options){
+    return fetch(path,options||{}).then(function(response){
+      if(response.status===204)return null;
+      return response.json().then(function(data){
+        if(!response.ok)throw new Error(data.error||"Request failed ("+response.status+")");
+        return data;
+      });
+    });
+  }
   function put(g){
     if(db){return db.collection("guests").doc(g.code).set(g).catch(function(e){toast("Could not save: "+(e&&e.message||"try again"))})}
+    if(apiMode){
+      return apiRequest("/api/guests/"+encodeURIComponent(g.code),{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(g)}).then(function(){
+        guests.set(g.code,g);persist();render();return true;
+      }).catch(function(e){toast("Could not save: "+e.message);return false});
+    }
     if(cloud){
       return cloud.from("doorlist_guests").upsert(toCloudGuest(g)).then(function(r){
         if(r.error){toast("Could not save: "+r.error.message);return false}
@@ -48,6 +62,11 @@
   }
   function remove(code){
     if(db){return db.collection("guests").doc(code).delete().catch(function(){toast("Could not delete")})}
+    if(apiMode){
+      return apiRequest("/api/guests/"+encodeURIComponent(code),{method:"DELETE"}).then(function(){
+        guests.delete(code);persist();render();return true;
+      }).catch(function(e){toast("Could not delete: "+e.message);return false});
+    }
     if(cloud){
       return cloud.from("doorlist_guests").delete().eq("code",code).then(function(r){
         if(r.error){toast("Could not delete: "+r.error.message);return false}
@@ -57,7 +76,10 @@
     guests.delete(code);persist();render();return Promise.resolve();
   }
   function saveEventName(){
-    if(db){db.doc("meta/event").set({name:eventName}).catch(function(e){showNotice("Could not save the shared event name: "+(e&&e.message||"try again"))})}else persist();
+    if(apiMode){
+      apiRequest("/api/event",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:eventName})})
+        .then(function(){persist()}).catch(function(e){showNotice("Could not save the event name: "+e.message)});
+    }else if(db){db.doc("meta/event").set({name:eventName}).catch(function(e){showNotice("Could not save the shared event name: "+(e&&e.message||"try again"))})}else if(!cloud)persist();
     if(cloud)cloud.from("doorlist_event").upsert({id:1,name:eventName}).then(function(r){
       if(r.error)showNotice("Could not save the shared event name: "+r.error.message);
     }).catch(function(e){showNotice("Could not save the shared event name: "+(e&&e.message||"check your connection"))});
@@ -211,7 +233,7 @@
     guests.set(code,up);render();
     renderResult();
     var saving=put(up);
-    if(cloud)saving.then(function(saved){
+    if(cloud||apiMode)saving.then(function(saved){
       if(saved===false){
         guests.set(code,g);lastResult={kind:"error",message:"The guest is still on the list, but the check-in was not saved. Try again."};
         render();renderResult();
@@ -401,8 +423,8 @@
       if(email)have[email.toLowerCase()]=1;
       made.push(addGuest(name,email,ticket));
     });
-    if(db||cloud){
-      if(cloud)made.forEach(function(g){guests.delete(g.code)});
+    if(db||cloud||apiMode){
+      if(cloud||apiMode)made.forEach(function(g){guests.delete(g.code)});
       for(var i=0;i<made.length;i++){
         $("importmsg").textContent="Saving "+(i+1)+" of "+made.length+"…";
         if(await put(made[i])===false){
@@ -464,7 +486,7 @@
     e.preventDefault();
     var g=addGuest($("gname").value.trim(),$("gemail").value.trim(),$("gticket").value.trim());
     $("gname").value="";$("gemail").value="";
-    if(db||cloud){
+    if(db||cloud||apiMode){
       guests.set(g.code,g);render();
       put(g).then(function(saved){
         if(saved===false){guests.delete(g.code);persist();render();return}
@@ -486,7 +508,7 @@
     var b=this;
     if(!wipeArmed){wipeArmed=true;b.textContent="Tap again to delete everyone";setTimeout(function(){wipeArmed=false;b.textContent="Delete all guests"},3500);return}
     wipeArmed=false;b.textContent="Delete all guests";
-    if(cloud){
+    if(cloud||apiMode){
       var sharedCodes=Array.from(guests.keys()),failed=false;
       for(var j=0;j<sharedCodes.length;j++)if(await remove(sharedCodes[j])===false)failed=true;
       if(!failed){lastResult=null;render()}
@@ -494,7 +516,7 @@
       return;
     }
     var codes=Array.from(guests.keys());guests.clear();lastResult=null;render();
-    if(db||cloud){for(var i=0;i<codes.length;i++)await remove(codes[i])}else persist();
+    if(db||cloud||apiMode){for(var i=0;i<codes.length;i++)await remove(codes[i])}else persist();
     toast("All guests deleted");
   });
   $("export").addEventListener("click",function(){
@@ -526,13 +548,38 @@
 
   /* ---------- start ---------- */
   function showNotice(msg){var n=$("notice");n.textContent=msg;n.hidden=!msg}
+  async function startApi(){
+    $("auth").hidden=true;
+    loadLocal();render();
+    try{
+      var remote=await apiRequest("/api/guests");
+      var known=new Set(remote.map(function(g){return g.code}));
+      var local=Array.from(guests.values()).filter(function(g){return !known.has(g.code)});
+      for(var i=0;i<local.length;i++){
+        await apiRequest("/api/guests/"+encodeURIComponent(local[i].code),{
+          method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(local[i])
+        });
+      }
+      var savedEvent=await apiRequest("/api/event");
+      if(savedEvent.name===null){
+        await apiRequest("/api/event",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:eventName})});
+      }else eventName=savedEvent.name;
+      remote=await apiRequest("/api/guests");
+      guests=new Map(remote.map(function(g){return [g.code,g]}));
+      persist();render();showNotice("");
+    }catch(e){
+      showNotice("MySQL API unavailable: "+e.message+". Check the server, .env, and database setup.");
+    }
+  }
   function start(){
     var cl=window.claude;
     var pdb=cl&&cl.use?cl.use("db"):Promise.resolve(null);
     var pdl=cl&&cl.use?cl.use("downloads"):Promise.resolve(null);
     Promise.all([pdb.catch(function(){return null}),pdl.catch(function(){return null})]).then(function(r){
       db=r[0];downloads=r[1];
-      if(db){
+      if(window.DOORLIST_API){
+        apiMode=true;startApi();
+      }else if(db){
         localMode=false;loadLocal();render();
         var timer=setTimeout(function(){showNotice("Still connecting to the shared guest list…")},10000);
         db.collection("guests").onSnapshot(function(snap){

@@ -1,8 +1,9 @@
-# Shared guest list setup
+# Optional Supabase setup
 
-The app stays in browser-only mode until both Supabase settings in `app.js`
-are filled in. Shared mode uses email sign-in and only the Supabase publishable
-(or legacy `anon`) key; never put a `service_role` key in this file.
+Use this guide only if you want to host the static app with Supabase instead of
+running the local MySQL server. The browser uses email sign-in and the Supabase
+publishable (or legacy `anon`) key. Never put a database password or
+`service_role` key in frontend code.
 
 1. Create a Supabase project and run `supabase-setup.sql` in its SQL Editor.
    If you already set up Supabase, run the updated SQL again to add the
