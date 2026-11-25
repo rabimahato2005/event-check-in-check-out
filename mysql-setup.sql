@@ -1,8 +1,8 @@
-CREATE DATABASE IF NOT EXISTS doorlist
+CREATE DATABASE IF NOT EXISTS `Event_check_in_check_out`
   CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
 
-USE doorlist;
+USE `Event_check_in_check_out`;
 
 CREATE TABLE IF NOT EXISTS doorlist_guests (
   code VARCHAR(40) NOT NULL PRIMARY KEY,
